@@ -1,0 +1,222 @@
+@import url('https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;500;600;700;800&family=Black+Ops+One&family=Cousine:wght@400;700&family=Secular+One&display=swap');
+
+:root {
+  /* Brand Guidelines Colors */
+  --bg-app: #0B0F19;           /* Obsidian Slate */
+  --bg-card: #1E293B;          /* Deep Slate */
+  --bg-card-hover: #243249;
+  --bg-sidebar: #070A11;
+  --border-muted: rgba(255, 255, 255, 0.08);
+  --border-accent: #4F46E5;    /* Electric Indigo */
+  
+  --color-primary: #4F46E5;    /* Electric Indigo */
+  --color-success: #10B981;    /* Emerald */
+  --color-warning: #F59E0B;    /* Amber */
+  --color-danger: #EF4444;     /* Ruby */
+  
+  --text-main: #F1F5F9;        /* Off-white */
+  --text-muted: #94A3B8;       /* Slate-400 */
+  
+  /* Status Colors */
+  --color-status-lead: #3B82F6;
+  --color-status-contacted: #8B5CF6;
+  --color-status-proposal: #F59E0B;
+  --color-status-negotiation: #EC4899;
+  --color-status-won: #10B981;
+  --color-status-lost: #EF4444;
+
+  /* Fonts Pairings */
+  --font-display-en: 'Black Ops One', sans-serif;
+  --font-display-he: 'Secular One', sans-serif;
+  --font-mono: 'Cousine', monospace;
+  --font-body: 'Assistant', sans-serif;
+  
+  --shadow-flat: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-active: 0 8px 24px rgba(79, 70, 229, 0.15);
+  
+  --transition-fast: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  overflow-x: hidden;
+  direction: rtl;
+  min-height: 100vh;
+  letter-spacing: -0.01em;
+}
+
+/* Typography Utility Classes */
+h1, h2, h3 {
+  font-family: var(--font-display-he);
+  font-weight: normal;
+  letter-spacing: 0.02em;
+  color: #FFFFFF;
+}
+
+.text-brand-en {
+  font-family: var(--font-display-en);
+  letter-spacing: 0.05em;
+}
+
+.text-mono {
+  font-family: var(--font-mono);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-sidebar);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-card);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-primary);
+}
+
+/* Card - Solid material grid panel */
+.glass-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  box-shadow: var(--shadow-flat);
+  transition: var(--transition-fast);
+}
+
+.glass-panel:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-active);
+  background: var(--bg-card-hover);
+}
+
+/* Inputs - Monospace data inputs */
+.input-glass {
+  background: #0d121c;
+  border: 1px solid var(--border-muted);
+  border-radius: 4px;
+  padding: 10px 14px;
+  color: #FFFFFF;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  transition: var(--transition-fast);
+  width: 100%;
+  outline: none;
+}
+
+.input-glass:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary);
+}
+
+/* Buttons - Sharp, industrial design */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 4px;
+  font-family: var(--font-display-he);
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+  border: none;
+  outline: none;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.btn-primary {
+  background-color: var(--color-primary);
+  color: #FFFFFF;
+  border: 1px solid var(--color-primary);
+}
+
+.btn-primary:hover {
+  background-color: #4338CA;
+  border-color: #4338CA;
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background-color: transparent;
+  color: var(--text-main);
+  border: 1px solid var(--border-muted);
+}
+
+.btn-secondary:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+  border-color: var(--text-muted);
+}
+
+.btn-danger {
+  background-color: var(--color-danger);
+  color: #FFFFFF;
+}
+
+.btn-danger:hover {
+  background-color: #DC2626;
+  transform: translateY(-1px);
+}
+
+/* Badges - Monospace and flat */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: normal;
+}
+
+/* Status variants */
+.badge-lead { background: rgba(59, 130, 246, 0.08); color: #60A5FA; border: 1px solid rgba(59, 130, 246, 0.15); }
+.badge-contacted { background: rgba(139, 92, 246, 0.08); color: #A78BFA; border: 1px solid rgba(139, 92, 246, 0.15); }
+.badge-proposal { background: rgba(245, 158, 11, 0.08); color: #FBBF24; border: 1px solid rgba(245, 158, 11, 0.15); }
+.badge-negotiation { background: rgba(236, 72, 153, 0.08); color: #F472B6; border: 1px solid rgba(236, 72, 153, 0.15); }
+.badge-won { background: rgba(16, 185, 129, 0.08); color: #34D399; border: 1px solid rgba(16, 185, 129, 0.15); }
+.badge-lost { background: rgba(239, 68, 68, 0.08); color: #F87171; border: 1px solid rgba(239, 68, 68, 0.15); }
+
+/* Accessibility Focus Indicator */
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Layout container styling */
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+  padding: 40px;
+  overflow-y: auto;
+  height: 100vh;
+}
+
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column;
+  }
+  .main-content {
+    padding: 20px;
+    height: auto;
+    min-height: calc(100vh - 70px);
+  }
+}

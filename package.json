@@ -1,0 +1,16 @@
+{
+  "name": "abc-tom-crm-monorepo",
+  "version": "1.0.0",
+  "description": "Monorepo root for CRM system",
+  "scripts": {
+    "install:server": "npm --prefix server install",
+    "install:client": "npm --prefix client install",
+    "install-all": "npm run install:server && npm run install:client",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "npx concurrently --kill-others-on-fail \"npm run dev:server\" \"npm run dev:client\"",
+    "build:client": "npm --prefix client run build",
+    "build": "npm run install-all && npm run build:client",
+    "start": "npm --prefix server start"
+  }
+}

@@ -1,0 +1,24 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+web_modules/
+
+# Local databases
+server/crm.db
+server/crm.db-journal
+
+# Uploaded documents
+server/uploads/*
+!server/uploads/.gitkeep
+
+# Production builds
+client/dist/
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
