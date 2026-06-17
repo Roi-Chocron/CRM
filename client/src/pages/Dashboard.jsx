@@ -153,7 +153,7 @@ const Dashboard = ({ setActiveClient, setCurrentPage }) => {
           </div>
         </div>
         <div className="hero-visual-col">
-          <img src="/mascot.png" alt="Pixel the Cyber Owl" className="mascot-img" />
+          <img src="mascot.png" alt="Pixel the Cyber Owl" className="mascot-img" />
         </div>
       </div>
 
