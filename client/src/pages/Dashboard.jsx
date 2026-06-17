@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useToast } from '../components/Toast';
 import { Plus, Calendar, Coins, TrendingUp, Users, Target, CheckCircle, X } from 'lucide-react';
+import { API_URL } from '../config';
 
 const Dashboard = ({ setActiveClient, setCurrentPage }) => {
   const [stats, setStats] = useState(null);
@@ -22,11 +23,11 @@ const Dashboard = ({ setActiveClient, setCurrentPage }) => {
 
   const fetchDashboardData = async () => {
     try {
-      const statsRes = await fetch('/api/stats');
+      const statsRes = await fetch(`${API_URL}/api/stats`);
       const statsData = await statsRes.json();
       setStats(statsData);
 
-      const tasksRes = await fetch('/api/tasks');
+      const tasksRes = await fetch(`${API_URL}/api/tasks`);
       const tasksData = await tasksRes.json();
       setRecentTasks(tasksData.filter(t => t.status === 'pending').slice(0, 5));
     } catch (error) {
@@ -44,7 +45,7 @@ const Dashboard = ({ setActiveClient, setCurrentPage }) => {
   const handleToggleTask = async (task) => {
     try {
       const updatedStatus = task.status === 'pending' ? 'completed' : 'pending';
-      const res = await fetch(`/api/tasks/${task.id}`, {
+      const res = await fetch(`${API_URL}/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: updatedStatus })
@@ -63,7 +64,7 @@ const Dashboard = ({ setActiveClient, setCurrentPage }) => {
     if (!newLead.name) return;
 
     try {
-      const res = await fetch('/api/clients', {
+      const res = await fetch(`${API_URL}/api/clients`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

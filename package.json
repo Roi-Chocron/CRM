@@ -12,5 +12,8 @@
     "build:client": "npm --prefix client run build",
     "build": "npm run install-all && npm run build:client",
     "start": "npm --prefix server start"
+  },
+  "dependencies": {
+    "hono": "^4.12.25"
   }
 }

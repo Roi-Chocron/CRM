@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useToast } from '../components/Toast';
 import { Calendar, RefreshCw, Database, Trash2, Download, Save, Info } from 'lucide-react';
+import { API_URL } from '../config';
 
 const Settings = () => {
   const { showToast } = useToast();
@@ -11,7 +12,7 @@ const Settings = () => {
 
   const handleBackupData = async () => {
     try {
-      const res = await fetch('/api/clients');
+      const res = await fetch(`${API_URL}/api/clients`);
       const data = await res.json();
       
       const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
@@ -37,7 +38,7 @@ const Settings = () => {
 
     setSyncing(true);
     try {
-      const res = await fetch('/api/calendar/sync', {
+      const res = await fetch(`${API_URL}/api/calendar/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: calendarUrl })
@@ -64,7 +65,7 @@ const Settings = () => {
 
     setClearing(true);
     try {
-      const res = await fetch('/api/settings/reset', {
+      const res = await fetch(`${API_URL}/api/settings/reset`, {
         method: 'POST'
       });
       if (res.ok) {
@@ -86,7 +87,7 @@ const Settings = () => {
 
     setSeeding(true);
     try {
-      const res = await fetch('/api/settings/seed', {
+      const res = await fetch(`${API_URL}/api/settings/seed`, {
         method: 'POST'
       });
       if (res.ok) {

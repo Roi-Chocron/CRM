@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useToast } from '../components/Toast';
 import { Plus, FolderOpen, Phone, Tag, Trash2, X, Search, Upload, FileText, Mail, Users, MessageSquare } from 'lucide-react';
+import { API_URL } from '../config';
 
 const Clients = ({ activeClientId, setActiveClientId }) => {
   const [clients, setClients] = useState([]);
@@ -28,11 +29,11 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
   const fetchClients = async () => {
     setLoading(true);
     try {
-      const url = new URL('/api/clients', window.location.origin);
+      const url = new URL(`${API_URL}/api/clients`);
       if (search) url.searchParams.append('search', search);
       if (statusFilter) url.searchParams.append('status', statusFilter);
 
-      const res = await fetch(url);
+      const res = await fetch(url.toString());
       const data = await res.json();
       setClients(data);
 
@@ -136,7 +137,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
 
   const fetchClientDetails = async (id) => {
     try {
-      const res = await fetch(`/api/clients/${id}`);
+      const res = await fetch(`${API_URL}/api/clients/${id}`);
       const data = await res.json();
       setSelectedClient(data);
       setEditForm(data);
@@ -149,7 +150,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
   const handleUpdateClient = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`/api/clients/${selectedClient.id}`, {
+      const res = await fetch(`${API_URL}/api/clients/${selectedClient.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -176,7 +177,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     }
 
     try {
-      const res = await fetch(`/api/clients/${selectedClient.id}`, {
+      const res = await fetch(`${API_URL}/api/clients/${selectedClient.id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -194,7 +195,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     if (!newNote.content.trim()) return;
 
     try {
-      const res = await fetch(`/api/clients/${selectedClient.id}/notes`, {
+      const res = await fetch(`${API_URL}/api/clients/${selectedClient.id}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newNote)
@@ -214,7 +215,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     if (!newTask.title.trim()) return;
 
     try {
-      const res = await fetch('/api/tasks', {
+      const res = await fetch(`${API_URL}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -236,19 +237,22 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    const formData = new FormData();
-    formData.append('file', file);
-
+    // Edge Workers mode: simulate upload with name/size metadata in JSON
     try {
-      const res = await fetch(`/api/clients/${selectedClient.id}/documents`, {
+      const res = await fetch(`${API_URL}/api/clients/${selectedClient.id}/documents`, {
         method: 'POST',
-        body: formData
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName: file.name,
+          fileSize: file.size,
+          filePath: `/mock-uploads/${Date.now()}-${file.name}`
+        })
       });
       if (res.ok) {
-        showToast('הקובץ הועלה בהצלחה');
+        showToast('המסמך צורף בהצלחה (מצב ענן)');
         fetchClientDetails(selectedClient.id);
       } else {
-        showToast('שגיאה בהעלאת הקובץ', 'error');
+        showToast('שגיאה בצירוף המסמך', 'error');
       }
     } catch (error) {
       showToast('שגיאה בחיבור לשרת', 'error');
@@ -259,7 +263,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     if (!window.confirm('האם למחוק את המסמך לצמיתות?')) return;
 
     try {
-      const res = await fetch(`/api/documents/${docId}`, {
+      const res = await fetch(`${API_URL}/api/documents/${docId}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -276,7 +280,7 @@ const Clients = ({ activeClientId, setActiveClientId }) => {
     if (!newLead.name) return;
 
     try {
-      const res = await fetch('/api/clients', {
+      const res = await fetch(`${API_URL}/api/clients`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

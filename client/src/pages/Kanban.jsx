@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useToast } from '../components/Toast';
 import { FolderOpen, Tag } from 'lucide-react';
+import { API_URL } from '../config';
 
 const Kanban = ({ setActiveClient, setCurrentPage }) => {
   const [clients, setClients] = useState([]);
@@ -19,7 +20,7 @@ const Kanban = ({ setActiveClient, setCurrentPage }) => {
 
   const fetchClients = async () => {
     try {
-      const res = await fetch('/api/clients');
+      const res = await fetch(`${API_URL}/api/clients`);
       const data = await res.json();
       setClients(data);
     } catch (error) {
@@ -64,7 +65,7 @@ const Kanban = ({ setActiveClient, setCurrentPage }) => {
     setClients(prev => prev.map(c => c.id === clientId ? { ...c, status: targetStatus } : c));
 
     try {
-      const res = await fetch(`/api/clients/${clientId}`, {
+      const res = await fetch(`${API_URL}/api/clients/${clientId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

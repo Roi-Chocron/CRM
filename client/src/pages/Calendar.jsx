@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useToast } from '../components/Toast';
 import { Plus, Calendar as CalendarIcon, User, Trash2, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { API_URL } from '../config';
 
 const Calendar = () => {
   const [tasks, setTasks] = useState([]);
@@ -24,11 +25,11 @@ const Calendar = () => {
 
   const fetchData = async () => {
     try {
-      const tasksRes = await fetch('/api/tasks');
+      const tasksRes = await fetch(`${API_URL}/api/tasks`);
       const tasksData = await tasksRes.json();
       setTasks(tasksData);
 
-      const clientsRes = await fetch('/api/clients');
+      const clientsRes = await fetch(`${API_URL}/api/clients`);
       const clientsData = await clientsRes.json();
       setClients(clientsData);
     } catch (error) {
@@ -94,7 +95,7 @@ const Calendar = () => {
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: nextStatus } : t));
 
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
+      const res = await fetch(`${API_URL}/api/tasks/${task.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus })
@@ -115,7 +116,7 @@ const Calendar = () => {
     if (!window.confirm('האם למחוק משימה זו?')) return;
 
     try {
-      const res = await fetch(`/api/tasks/${taskId}`, {
+      const res = await fetch(`${API_URL}/api/tasks/${taskId}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -132,7 +133,7 @@ const Calendar = () => {
     if (!newTask.title) return;
 
     try {
-      const res = await fetch('/api/tasks', {
+      const res = await fetch(`${API_URL}/api/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

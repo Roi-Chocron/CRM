@@ -1,44 +1,12 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-import { dbQuery, dbGet, dbRun } from './database.js';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const app = new Hono();
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+// Enable CORS
+app.use('/api/*', cors());
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Ensure uploads folder exists
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Serve uploaded files statically
-app.use('/uploads', express.static(uploadsDir));
-
-// Multer storage configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-  }
-});
-const upload = multer({ storage });
-
-// Helper to parse ICS calendar feeds
+// Helper to parse ICS calendar feeds (Runs completely in memory)
 function parseICS(icsText) {
   const events = [];
   const lines = icsText.split(/\r?\n/);
@@ -47,7 +15,7 @@ function parseICS(icsText) {
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i].trim();
     
-    // Handle line folding (lines starting with space/tab continue the previous line)
+    // Handle line folding
     while (i + 1 < lines.length && (lines[i+1].startsWith(' ') || lines[i+1].startsWith('\t'))) {
       line += lines[i+1].substring(1);
       i++;
@@ -66,7 +34,6 @@ function parseICS(icsText) {
       } else if (line.startsWith('DESCRIPTION:')) {
         currentEvent.description = line.substring(12).trim().replace(/\\n/g, '\n').replace(/\\,/g, ',');
       } else if (line.startsWith('DTSTART:')) {
-        // Parse DTSTART (e.g. DTSTART:20260616T180000Z or DTSTART;VALUE=DATE:20260616)
         const parts = line.split(':');
         const val = parts[parts.length - 1];
         if (val && val.length >= 8) {
@@ -81,14 +48,25 @@ function parseICS(icsText) {
   return events;
 }
 
+// SQL Query Translators for SQLite D1 Compatibility
+function translateSql(sql) {
+  // Convert ? placeholders to ?1, ?2, ?3... for D1 parameter bindings
+  let placeholderIndex = 1;
+  return sql.replace(/\?/g, () => `?${placeholderIndex++}`);
+}
+
+// Helper query functions using Cloudflare D1 (provided via c.env.DB)
+const getDb = (c) => c.env.DB;
+
 // ==========================================
 // CLIENTS / LEADS ROUTES
 // ==========================================
 
-// Get all clients with filtering & search
-app.get('/api/clients', async (req, res) => {
+// Get all clients
+app.get('/api/clients', async (c) => {
   try {
-    const { status, search } = req.query;
+    const db = getDb(c);
+    const { status, search } = c.req.query();
     let query = 'SELECT * FROM clients';
     const params = [];
 
@@ -109,89 +87,100 @@ app.get('/api/clients', async (req, res) => {
 
     query += ' ORDER BY created_at DESC';
 
-    const clients = await dbQuery(query, params);
-    res.json(clients);
+    const translatedSql = translateSql(query);
+    const result = await db.prepare(translatedSql).bind(...params).all();
+    return c.json(result.results);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Get single client detailed view
-app.get('/api/clients/:id', async (req, res) => {
+app.get('/api/clients/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const client = await dbGet('SELECT * FROM clients WHERE id = ?', [id]);
+    const db = getDb(c);
+    const id = c.req.param('id');
     
+    const client = await db.prepare('SELECT * FROM clients WHERE id = ?1').bind(id).first();
     if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
+      return c.json({ error: 'Client not found' }, 404);
     }
 
-    const notes = await dbQuery('SELECT * FROM notes WHERE client_id = ? ORDER BY created_at DESC', [id]);
-    const tasks = await dbQuery('SELECT * FROM tasks WHERE client_id = ? ORDER BY due_date ASC', [id]);
-    const documents = await dbQuery('SELECT * FROM documents WHERE client_id = ? ORDER BY created_at DESC', [id]);
+    const notes = await db.prepare('SELECT * FROM notes WHERE client_id = ?1 ORDER BY created_at DESC').bind(id).all();
+    const tasks = await db.prepare('SELECT * FROM tasks WHERE client_id = ?1 ORDER BY due_date ASC').bind(id).all();
+    const documents = await db.prepare('SELECT * FROM documents WHERE client_id = ?1 ORDER BY created_at DESC').bind(id).all();
 
-    res.json({
+    return c.json({
       ...client,
-      notes,
-      tasks,
-      documents
+      notes: notes.results,
+      tasks: tasks.results,
+      documents: documents.results
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Create new client
-app.post('/api/clients', async (req, res) => {
+app.post('/api/clients', async (c) => {
   try {
-    const { name, company, email, phone, status, source, deal_value, notes } = req.body;
+    const db = getDb(c);
+    const body = await c.req.json();
+    const { name, company, email, phone, status, source, deal_value, notes } = body;
+    
     if (!name) {
-      return res.status(400).json({ error: 'Name is required' });
+      return c.json({ error: 'Name is required' }, 400);
     }
 
-    const result = await dbRun(`
+    const clientStatus = status || 'lead';
+    const clientSource = source || 'אחר';
+    const clientDealValue = deal_value || 0;
+    const clientCompany = company || '';
+    const clientEmail = email || '';
+    const clientPhone = phone || '';
+    const clientNotes = notes || '';
+
+    const query = `
       INSERT INTO clients (name, company, email, phone, status, source, deal_value, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      name,
-      company || '',
-      email || '',
-      phone || '',
-      status || 'lead',
-      source || 'אחר',
-      deal_value || 0,
-      notes || ''
-    ]);
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+    `;
+    
+    const runResult = await db.prepare(query).bind(
+      name, clientCompany, clientEmail, clientPhone, clientStatus, clientSource, clientDealValue, clientNotes
+    ).run();
 
-    // Create default system note
-    await dbRun(`
-      INSERT INTO notes (client_id, content, type)
-      VALUES (?, ?, ?)
-    `, [result.id, 'לקוח חדש נוצר במערכת', 'note']);
+    const insertId = runResult.meta.last_row_id || 1;
 
-    const newClient = await dbGet('SELECT * FROM clients WHERE id = ?', [result.id]);
-    res.status(201).json(newClient);
+    // Create default note
+    await db.prepare('INSERT INTO notes (client_id, content, type) VALUES (?1, ?2, ?3)').bind(
+      insertId, 'לקוח חדש נוצר במערכת', 'note'
+    ).run();
+
+    const newClient = await db.prepare('SELECT * FROM clients WHERE id = ?1').bind(insertId).first();
+    return c.json(newClient, 201);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Update client
-app.put('/api/clients/:id', async (req, res) => {
+app.put('/api/clients/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const { name, company, email, phone, status, source, deal_value, notes } = req.body;
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const { name, company, email, phone, status, source, deal_value, notes } = body;
 
-    const oldClient = await dbGet('SELECT status FROM clients WHERE id = ?', [id]);
+    const oldClient = await db.prepare('SELECT status FROM clients WHERE id = ?1').bind(id).first();
     if (!oldClient) {
-      return res.status(404).json({ error: 'Client not found' });
+      return c.json({ error: 'Client not found' }, 404);
     }
 
-    await dbRun(`
+    await db.prepare(`
       UPDATE clients 
-      SET name = ?, company = ?, email = ?, phone = ?, status = ?, source = ?, deal_value = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `, [name, company, email, phone, status, source, deal_value, notes, id]);
+      SET name = ?1, company = ?2, email = ?3, phone = ?4, status = ?5, source = ?6, deal_value = ?7, notes = ?8, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?9
+    `).bind(name, company, email, phone, status, source, deal_value, notes, id).run();
 
     // Add note if status changed
     if (oldClient.status !== status) {
@@ -203,30 +192,31 @@ app.put('/api/clients/:id', async (req, res) => {
         'won': 'עסקה נסגרה (Won)',
         'lost': 'עסקה אבודה (Lost)'
       };
-      await dbRun(`
-        INSERT INTO notes (client_id, content, type)
-        VALUES (?, ?, ?)
-      `, [id, `סטטוס לקוח עודכן מ-${statusMap[oldClient.status] || oldClient.status} ל-${statusMap[status] || status}`, 'note']);
+      await db.prepare('INSERT INTO notes (client_id, content, type) VALUES (?1, ?2, ?3)').bind(
+        id, `סטטוס לקוח עודכן מ-${statusMap[oldClient.status] || oldClient.status} ל-${statusMap[status] || status}`, 'note'
+      ).run();
     }
 
-    const updatedClient = await dbGet('SELECT * FROM clients WHERE id = ?', [id]);
-    res.json(updatedClient);
+    const updatedClient = await db.prepare('SELECT * FROM clients WHERE id = ?1').bind(id).first();
+    return c.json(updatedClient);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Delete client
-app.delete('/api/clients/:id', async (req, res) => {
+app.delete('/api/clients/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const result = await dbRun('DELETE FROM clients WHERE id = ?', [id]);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+    const db = getDb(c);
+    const id = c.req.param('id');
+    
+    const result = await db.prepare('DELETE FROM clients WHERE id = ?1').bind(id).run();
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Client not found' }, 404);
     }
-    res.json({ message: 'Client deleted successfully' });
+    return c.json({ message: 'Client deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
@@ -235,92 +225,104 @@ app.delete('/api/clients/:id', async (req, res) => {
 // ==========================================
 
 // Get all tasks
-app.get('/api/tasks', async (req, res) => {
+app.get('/api/tasks', async (c) => {
   try {
-    const tasks = await dbQuery(`
+    const db = getDb(c);
+    const tasks = await db.prepare(`
       SELECT t.*, c.name as client_name 
       FROM tasks t 
       LEFT JOIN clients c ON t.client_id = c.id
       ORDER BY t.status DESC, t.due_date ASC
-    `);
-    res.json(tasks);
+    `).all();
+    return c.json(tasks.results);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Create task
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', async (c) => {
   try {
-    const { title, description, due_date, client_id } = req.body;
+    const db = getDb(c);
+    const body = await c.req.json();
+    const { title, description, due_date, client_id } = body;
+    
     if (!title) {
-      return res.status(400).json({ error: 'Title is required' });
+      return c.json({ error: 'Title is required' }, 400);
     }
 
-    const result = await dbRun(`
+    const query = `
       INSERT INTO tasks (title, description, due_date, client_id, status)
-      VALUES (?, ?, ?, ?, 'pending')
-    `, [title, description || '', due_date || null, client_id || null]);
+      VALUES (?1, ?2, ?3, ?4, 'pending')
+    `;
+    const runResult = await db.prepare(query).bind(
+      title, description || '', due_date || null, client_id || null
+    ).run();
 
-    const newTask = await dbGet(`
+    const insertId = runResult.meta.last_row_id || 1;
+    const newTask = await db.prepare(`
       SELECT t.*, c.name as client_name 
       FROM tasks t 
       LEFT JOIN clients c ON t.client_id = c.id 
-      WHERE t.id = ?
-    `, [result.id]);
-    res.status(201).json(newTask);
+      WHERE t.id = ?1
+    `).bind(insertId).first();
+
+    return c.json(newTask, 201);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Update task
-app.put('/api/tasks/:id', async (req, res) => {
+app.put('/api/tasks/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const { title, description, due_date, status, client_id } = req.body;
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const { title, description, due_date, status, client_id } = body;
 
-    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+    const task = await db.prepare('SELECT * FROM tasks WHERE id = ?1').bind(id).first();
     if (!task) {
-      return res.status(404).json({ error: 'Task not found' });
+      return c.json({ error: 'Task not found' }, 404);
     }
 
-    await dbRun(`
-      UPDATE tasks 
-      SET title = ?, description = ?, due_date = ?, status = ?, client_id = ?
-      WHERE id = ?
-    `, [
-      title !== undefined ? title : task.title,
-      description !== undefined ? description : task.description,
-      due_date !== undefined ? due_date : task.due_date,
-      status !== undefined ? status : task.status,
-      client_id !== undefined ? client_id : task.client_id,
-      id
-    ]);
+    const updTitle = title !== undefined ? title : task.title;
+    const updDesc = description !== undefined ? description : task.description;
+    const updDueDate = due_date !== undefined ? due_date : task.due_date;
+    const updStatus = status !== undefined ? status : task.status;
+    const updClientId = client_id !== undefined ? client_id : task.client_id;
 
-    const updatedTask = await dbGet(`
+    await db.prepare(`
+      UPDATE tasks 
+      SET title = ?1, description = ?2, due_date = ?3, status = ?4, client_id = ?5
+      WHERE id = ?6
+    `).bind(updTitle, updDesc, updDueDate, updStatus, updClientId, id).run();
+
+    const updatedTask = await db.prepare(`
       SELECT t.*, c.name as client_name 
       FROM tasks t 
       LEFT JOIN clients c ON t.client_id = c.id 
-      WHERE t.id = ?
-    `, [id]);
-    res.json(updatedTask);
+      WHERE t.id = ?1
+    `).bind(id).first();
+
+    return c.json(updatedTask);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Delete task
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const result = await dbRun('DELETE FROM tasks WHERE id = ?', [id]);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Task not found' });
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const result = await db.prepare('DELETE FROM tasks WHERE id = ?1').bind(id).run();
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Task not found' }, 404);
     }
-    res.json({ message: 'Task deleted successfully' });
+    return c.json({ message: 'Task deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
@@ -329,101 +331,105 @@ app.delete('/api/tasks/:id', async (req, res) => {
 // ==========================================
 
 // Add note to client
-app.post('/api/clients/:id/notes', async (req, res) => {
+app.post('/api/clients/:id/notes', async (c) => {
   try {
-    const { id } = req.params;
-    const { content, type } = req.body;
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    const { content, type } = body;
+    
     if (!content) {
-      return res.status(400).json({ error: 'Content is required' });
+      return c.json({ error: 'Content is required' }, 400);
     }
 
-    const result = await dbRun(`
+    const runResult = await db.prepare(`
       INSERT INTO notes (client_id, content, type)
-      VALUES (?, ?, ?)
-    `, [id, content, type || 'note']);
+      VALUES (?1, ?2, ?3)
+    `).bind(id, content, type || 'note').run();
 
-    const newNote = await dbGet('SELECT * FROM notes WHERE id = ?', [result.id]);
-    res.status(201).json(newNote);
+    const insertId = runResult.meta.last_row_id || 1;
+    const newNote = await db.prepare('SELECT * FROM notes WHERE id = ?1').bind(insertId).first();
+    return c.json(newNote, 201);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // Delete note
-app.delete('/api/notes/:id', async (req, res) => {
+app.delete('/api/notes/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const result = await dbRun('DELETE FROM notes WHERE id = ?', [id]);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: 'Note not found' });
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const result = await db.prepare('DELETE FROM notes WHERE id = ?1').bind(id).run();
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Note not found' }, 404);
     }
-    res.json({ message: 'Note deleted successfully' });
+    return c.json({ message: 'Note deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // ==========================================
-// DOCUMENTS ROUTES
+// DOCUMENTS ROUTES (D1 Cloud Mode: In-memory simulation / D1 reference)
 // ==========================================
 
-// Upload file for client
-app.post('/api/clients/:id/documents', upload.single('file'), async (req, res) => {
+// Cloudflare Workers has no writable local storage disk. 
+// We will store document paths referencing the UI file mock as simulation.
+app.post('/api/clients/:id/documents', async (c) => {
   try {
-    const { id } = req.params;
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+    const db = getDb(c);
+    const id = c.req.param('id');
+    
+    // In Edge Workers we simulate file attachments using details from json payload
+    const body = await c.req.json().catch(() => ({}));
+    const fileName = body.fileName || 'document.pdf';
+    const fileSize = body.fileSize || 102400; // 100 KB
+    const filePath = body.filePath || `/mock-uploads/${Date.now()}-${fileName}`;
 
-    const { originalname, filename, size } = req.file;
-    const relativePath = `/uploads/${filename}`;
-
-    const result = await dbRun(`
+    const runResult = await db.prepare(`
       INSERT INTO documents (client_id, file_name, file_path, file_size)
-      VALUES (?, ?, ?, ?)
-    `, [id, originalname, relativePath, size]);
+      VALUES (?1, ?2, ?3, ?4)
+    `).bind(id, fileName, filePath, fileSize).run();
 
-    await dbRun(`
-      INSERT INTO notes (client_id, content, type)
-      VALUES (?, ?, ?)
-    `, [id, `הועלה קובץ חדש: ${originalname}`, 'note']);
+    const insertId = runResult.meta.last_row_id || 1;
 
-    const newDoc = await dbGet('SELECT * FROM documents WHERE id = ?', [result.id]);
-    res.status(201).json(newDoc);
+    await db.prepare('INSERT INTO notes (client_id, content, type) VALUES (?1, ?2, ?3)').bind(
+      id, `הועלה מסמך חדש: ${fileName} (מצב ענן)`, 'note'
+    ).run();
+
+    const newDoc = await db.prepare('SELECT * FROM documents WHERE id = ?1').bind(insertId).first();
+    return c.json(newDoc, 201);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
-// Delete document
-app.delete('/api/documents/:id', async (req, res) => {
+app.delete('/api/documents/:id', async (c) => {
   try {
-    const { id } = req.params;
-    const doc = await dbGet('SELECT * FROM documents WHERE id = ?', [id]);
-    if (!doc) {
-      return res.status(404).json({ error: 'Document not found' });
+    const db = getDb(c);
+    const id = c.req.param('id');
+    const result = await db.prepare('DELETE FROM documents WHERE id = ?1').bind(id).run();
+    if (result.meta.changes === 0) {
+      return c.json({ error: 'Document not found' }, 404);
     }
-
-    const physicalPath = path.join(__dirname, doc.file_path);
-    if (fs.existsSync(physicalPath)) {
-      fs.unlinkSync(physicalPath);
-    }
-
-    await dbRun('DELETE FROM documents WHERE id = ?', [id]);
-    res.json({ message: 'Document deleted successfully' });
+    return c.json({ message: 'Document deleted successfully' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // ==========================================
-// CALENDAR SYNC iCal ROUTE (Real Calendar Connection)
+// CALENDAR SYNC iCal ROUTE
 // ==========================================
-app.post('/api/calendar/sync', async (req, res) => {
+app.post('/api/calendar/sync', async (c) => {
   try {
-    const { url } = req.body;
+    const db = getDb(c);
+    const body = await c.req.json();
+    const { url } = body;
+    
     if (!url) {
-      return res.status(400).json({ error: 'iCal feed URL is required' });
+      return c.json({ error: 'iCal feed URL is required' }, 400);
     }
 
     console.log(`Fetching calendar feed from: ${url}`);
@@ -435,27 +441,24 @@ app.post('/api/calendar/sync', async (req, res) => {
     const icsText = await response.text();
     const events = parseICS(icsText);
 
-    // Filter events to insert (insert only new ones, avoiding title + date duplicates)
     let addedCount = 0;
     for (const event of events) {
-      const existing = await dbGet(
-        "SELECT id FROM tasks WHERE title = ? AND due_date = ?", 
-        [event.title, event.due_date]
-      );
+      const existing = await db.prepare("SELECT id FROM tasks WHERE title = ?1 AND due_date = ?2").bind(
+        event.title, event.due_date
+      ).first();
       
       if (!existing) {
-        await dbRun(`
+        await db.prepare(`
           INSERT INTO tasks (title, description, due_date, status)
-          VALUES (?, ?, ?, 'pending')
-        `, [event.title, event.description || 'סונכרן מיומן חיצוני', event.due_date]);
+          VALUES (?1, ?2, ?3, 'pending')
+        `).bind(event.title, event.description || 'סונכרן מיומן חיצוני', event.due_date).run();
         addedCount++;
       }
     }
 
-    res.json({ message: 'Calendar synced successfully', eventsSynced: events.length, newEventsAdded: addedCount });
+    return c.json({ message: 'Calendar synced successfully', eventsSynced: events.length, newEventsAdded: addedCount });
   } catch (error) {
-    console.error('Calendar sync error:', error);
-    res.status(500).json({ error: `שגיאה בסנכרון היומן: ${error.message}` });
+    return c.json({ error: `שגיאה בסנכרון היומן: ${error.message}` }, 500);
   }
 });
 
@@ -463,38 +466,29 @@ app.post('/api/calendar/sync', async (req, res) => {
 // SETTINGS / RESET DATA ROUTES
 // ==========================================
 
-// Reset database (Clear all clients/tasks/etc.)
-app.post('/api/settings/reset', async (req, res) => {
+app.post('/api/settings/reset', async (c) => {
   try {
-    await dbRun('DELETE FROM clients');
-    await dbRun('DELETE FROM notes');
-    await dbRun('DELETE FROM tasks');
-    await dbRun('DELETE FROM documents');
+    const db = getDb(c);
+    await db.prepare('DELETE FROM clients').run();
+    await db.prepare('DELETE FROM notes').run();
+    await db.prepare('DELETE FROM tasks').run();
+    await db.prepare('DELETE FROM documents').run();
     
-    // Reset SQLite auto-increment counters
-    await dbRun("DELETE FROM sqlite_sequence WHERE name IN ('clients', 'notes', 'tasks', 'documents')");
-
-    // Delete uploaded files
-    const files = fs.readdirSync(uploadsDir);
-    for (const file of files) {
-      fs.unlinkSync(path.join(uploadsDir, file));
-    }
-
-    res.json({ message: 'Database reset successfully. Clean slate activated.' });
+    return c.json({ message: 'Database reset successfully. Clean slate activated.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
-// Re-seed mock database
-app.post('/api/settings/seed', async (req, res) => {
+app.post('/api/settings/seed', async (c) => {
   try {
+    const db = getDb(c);
+    
     // Clear first
-    await dbRun('DELETE FROM clients');
-    await dbRun('DELETE FROM notes');
-    await dbRun('DELETE FROM tasks');
-    await dbRun('DELETE FROM documents');
-    await dbRun("DELETE FROM sqlite_sequence WHERE name IN ('clients', 'notes', 'tasks', 'documents')");
+    await db.prepare('DELETE FROM clients').run();
+    await db.prepare('DELETE FROM notes').run();
+    await db.prepare('DELETE FROM tasks').run();
+    await db.prepare('DELETE FROM documents').run();
 
     // Re-seed
     const sampleClients = [
@@ -506,107 +500,97 @@ app.post('/api/settings/seed', async (req, res) => {
       ['איתי רפאל', 'רפאל פיננסים', 'itay@refael-finance.co.il', '054-8889900', 'lost', 'פייסבוק', 30000, 'החליט ללכת עם ספק זול יותר כרגע']
     ];
 
-    const insertClientSql = `
+    const query = `
       INSERT INTO clients (name, company, email, phone, status, source, deal_value, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     `;
 
     for (let idx = 0; idx < sampleClients.length; idx++) {
       const client = sampleClients[idx];
-      const result = await dbRun(insertClientSql, client);
-      const clientId = result.id;
+      const runResult = await db.prepare(query).bind(
+        client[0], client[1], client[2], client[3], client[4], client[5], client[6], client[7]
+      ).run();
+      
+      const clientId = runResult.meta.last_row_id || (idx + 1);
 
-      await dbRun(`
-        INSERT INTO notes (client_id, content, type)
-        VALUES (?, ?, ?)
-      `, [clientId, `שיחת התנעה ראשונית עם ${client[0]}. עודכן סטטוס ל-${client[4]}`, 'call']);
+      await db.prepare('INSERT INTO notes (client_id, content, type) VALUES (?1, ?2, ?3)').bind(
+        clientId, `שיחת התנעה ראשונית עם ${client[0]}. עודכן סטטוס ל-${client[4]}`, 'call'
+      ).run();
 
       if (idx % 2 === 0) {
-        await dbRun(`
+        await db.prepare(`
           INSERT INTO tasks (title, description, due_date, status, client_id)
-          VALUES (?, ?, ?, ?, ?)
-        `, [
+          VALUES (?1, ?2, ?3, ?4, ?5)
+        `).bind(
           `שיחת פולו-אפ עם ${client[0]}`,
           `לבדוק אם יש שאלות על הצעת המחיר או על התקדמות העבודה`,
           new Date(Date.now() + (idx + 1) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
           'pending',
           clientId
-        ]);
+        ).run();
       }
     }
 
-    res.json({ message: 'Database seeded successfully with sample data.' });
+    return c.json({ message: 'Database seeded successfully with sample data.' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
 // ==========================================
 // STATS / METRICS ROUTE
 // ==========================================
-app.get('/api/stats', async (req, res) => {
+app.get('/api/stats', async (c) => {
   try {
-    const totalWon = await dbGet("SELECT SUM(deal_value) as sum FROM clients WHERE status = 'won'");
-    const pipelineValue = await dbGet("SELECT SUM(deal_value) as sum FROM clients WHERE status NOT IN ('won', 'lost')");
+    const db = getDb(c);
     
-    const dealCounts = await dbGet(`
+    const totalWon = await db.prepare("SELECT SUM(deal_value) as sum FROM clients WHERE status = 'won'").first();
+    const pipelineValue = await db.prepare("SELECT SUM(deal_value) as sum FROM clients WHERE status NOT IN ('won', 'lost')").first();
+    
+    const dealCounts = await db.prepare(`
       SELECT 
         COUNT(CASE WHEN status = 'won' THEN 1 END) as won,
         COUNT(CASE WHEN status = 'lost' THEN 1 END) as lost,
         COUNT(*) as total
       FROM clients
-    `);
+    `).first();
 
-    const statusDistribution = await dbQuery(`
+    const statusDistribution = await db.prepare(`
       SELECT status, COUNT(*) as count, SUM(deal_value) as value 
       FROM clients 
       GROUP BY status
-    `);
+    `).all();
 
-    const sourceDistribution = await dbQuery(`
+    const sourceDistribution = await db.prepare(`
       SELECT source, COUNT(*) as count 
       FROM clients 
       GROUP BY source
-    `);
+    `).all();
 
-    const taskStats = await dbGet(`
+    const taskStats = await db.prepare(`
       SELECT 
         COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
         COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending
       FROM tasks
-    `);
+    `).first();
 
-    res.json({
+    return c.json({
       revenue: totalWon.sum || 0,
       pipeline: pipelineValue.sum || 0,
       totalLeads: dealCounts.total || 0,
       conversionRate: (dealCounts.won + dealCounts.lost) > 0 
         ? Math.round((dealCounts.won / (dealCounts.won + dealCounts.lost)) * 100) 
         : 0,
-      statusDistribution,
-      sourceDistribution,
+      statusDistribution: statusDistribution.results,
+      sourceDistribution: sourceDistribution.results,
       taskStats: {
         completed: taskStats.completed || 0,
         pending: taskStats.pending || 0
       }
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    return c.json({ error: error.message }, 500);
   }
 });
 
-// ==========================================
-// FALLBACK TO SERVE REACT CLIENT (Production)
-// ==========================================
-const clientDistDir = path.join(__dirname, '../client/dist');
-if (fs.existsSync(clientDistDir)) {
-  app.use(express.static(clientDistDir));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(clientDistDir, 'index.html'));
-  });
-}
-
-// Start Server
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+export default app;
