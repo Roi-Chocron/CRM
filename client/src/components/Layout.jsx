@@ -1,7 +1,8 @@
 import React from 'react';
 import Sidebar from './Sidebar';
+import { LogOut } from 'lucide-react';
 
-const Layout = ({ children, currentPage, setCurrentPage }) => {
+const Layout = ({ children, currentPage, setCurrentPage, onLogout }) => {
   const getPageTitle = () => {
     switch (currentPage) {
       case 'dashboard':
@@ -38,6 +39,13 @@ const Layout = ({ children, currentPage, setCurrentPage }) => {
           </div>
           
           <div className="header-actions">
+            <button 
+              onClick={onLogout}
+              className="btn btn-secondary logout-btn text-mono"
+              aria-label="התנתק מהמערכת"
+            >
+              <LogOut size={14} /> התנתק
+            </button>
             <div className="user-profile">
               <div className="user-details">
                 <span className="user-name">רועי</span>
@@ -73,6 +81,24 @@ const Layout = ({ children, currentPage, setCurrentPage }) => {
           font-size: 12px;
           color: var(--text-muted);
           margin-top: 6px;
+        }
+
+        .header-actions {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+        }
+
+        .logout-btn {
+          padding: 8px 12px;
+          font-size: 11px;
+          border-color: rgba(239, 68, 68, 0.2);
+          color: #ef4444;
+        }
+
+        .logout-btn:hover {
+          background-color: rgba(239, 68, 68, 0.05);
+          border-color: #ef4444;
         }
 
         .user-profile {

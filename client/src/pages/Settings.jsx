@@ -1,14 +1,78 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useToast } from '../components/Toast';
 import { Calendar, RefreshCw, Database, Trash2, Download, Save, Info } from 'lucide-react';
 import { API_URL } from '../config';
 
 const Settings = () => {
   const { showToast } = useToast();
-  const [calendarUrl, setCalendarUrl] = useState('');
-  const [syncing, setSyncing] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [seeding, setSeeding] = useState(false);
+  
+  // Google Calendar Integration states
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const [syncingGoogle, setSyncingGoogle] = useState(false);
+
+  // Check Google integration status on load
+  const checkGoogleStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/calendar/google/status`);
+      const data = await res.json();
+      if (res.ok) {
+        setGoogleConnected(data.connected);
+        if (data.lastSync) {
+          setLastSyncTime(new Date(data.lastSync).toLocaleString('he-IL'));
+        }
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    checkGoogleStatus();
+
+    // Listen to message from OAuth success popup window
+    const handleOAuthMessage = (event) => {
+      if (event.data === 'google-oauth-success') {
+        showToast('יומן Google חובק בהצלחה!');
+        checkGoogleStatus();
+      }
+    };
+
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, []);
+
+  const handleConnectGoogle = () => {
+    // Open Google OAuth redirect in a popup
+    const width = 500;
+    const height = 600;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    
+    window.open(
+      `${API_URL}/api/auth/google/redirect`,
+      'Google OAuth',
+      `width=${width},height=${height},top=${top},left=${left},resizable=yes,scrollbars=yes`
+    );
+  };
+
+  const handleSyncGoogle = async () => {
+    setSyncingGoogle(true);
+    try {
+      const res = await fetch(`${API_URL}/api/calendar/google/sync`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast(`סנכרון הושלם! נמצאו ${data.eventsSynced} אירועים, מתוכם ${data.newEventsAdded} משימות חדשות נוספו.`);
+        checkGoogleStatus();
+      } else {
+        showToast(data.error || 'שגיאה בסנכרון יומן Google', 'error');
+      }
+    } catch (e) {
+      showToast('שגיאה בתקשורת עם שרת הסנכרון', 'error');
+    } finally {
+      setSyncingGoogle(false);
+    }
+  };
 
   const handleBackupData = async () => {
     try {
@@ -29,32 +93,6 @@ const Settings = () => {
       showToast('קובץ גיבוי של הלקוחות הורד בהצלחה!');
     } catch (error) {
       showToast('שגיאה ביצירת הגיבוי', 'error');
-    }
-  };
-
-  const handleSyncCalendar = async (e) => {
-    e.preventDefault();
-    if (!calendarUrl.trim()) return;
-
-    setSyncing(true);
-    try {
-      const res = await fetch(`${API_URL}/api/calendar/sync`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: calendarUrl })
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        showToast(`סנכרון הושלם! סונכרנו ${data.eventsSynced} משימות, מתוכן ${data.newEventsAdded} חדשות.`);
-        setCalendarUrl('');
-      } else {
-        showToast(data.error || 'שגיאה בסנכרון היומן', 'error');
-      }
-    } catch (error) {
-      showToast('שגיאה בתקשורת עם השרת', 'error');
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -106,42 +144,56 @@ const Settings = () => {
     <div className="settings-page">
       <div className="settings-grid">
         
-        {/* iCal Calendar Integration */}
+        {/* Google Calendar OAuth Integration */}
         <div className="settings-card glass-panel">
           <h3>
             <Calendar size={16} style={{ display: 'inline-flex', alignItems: 'center', marginInlineEnd: '8px', verticalAlign: 'text-bottom' }} />
-            סנכרון יומן חיצוני
+            סנכרון Google Calendar
           </h3>
           <div className="card-content">
             <p className="settings-desc">
-              סנכרן פגישות ומשימות מיומן גוגל, אאוטלוק או אפל. 
-              הדבק את כתובת ה-iCal הסודית של היומן שלך:
+              סנכרן את המשימות של המערכת ישירות עם יומן ה-Google Calendar האישי שלך בצורה מאובטחת.
             </p>
             
-            <form onSubmit={handleSyncCalendar} className="calendar-sync-form">
-              <input 
-                type="url" 
-                placeholder="https://calendar.google.com/calendar/ical/.../basic.ics" 
-                value={calendarUrl}
-                onChange={e => setCalendarUrl(e.target.value)}
-                className="input-glass"
-                required
-              />
+            <div className="google-sync-status">
+              <span className="info-label">סטטוס חיבור: </span>
+              {googleConnected ? (
+                <span className="status-badge connected text-mono">מחובר ✓</span>
+              ) : (
+                <span className="status-badge disconnected text-mono">לא מחובר ✕</span>
+              )}
+            </div>
+
+            {lastSyncTime && (
+              <p className="settings-helper-desc text-mono" style={{ fontSize: '10px' }}>
+                סנכרון אחרון: {lastSyncTime}
+              </p>
+            )}
+
+            {!googleConnected ? (
               <button 
-                type="submit" 
-                className="btn btn-primary w-full"
-                disabled={syncing}
+                onClick={handleConnectGoogle}
+                className="btn btn-primary w-full google-btn"
               >
-                {syncing ? 'מסנכרן יומן...' : (
+                חבר יומן Google
+              </button>
+            ) : (
+              <button 
+                onClick={handleSyncGoogle}
+                className="btn btn-secondary w-full"
+                disabled={syncingGoogle}
+              >
+                {syncingGoogle ? 'מסנכרן יומן...' : (
                   <>
                     <RefreshCw size={14} style={{ display: 'inline-flex', alignItems: 'center', marginInlineEnd: '6px', verticalAlign: 'middle' }} />
-                    סנכרון יומן כעת
+                    סנכרן משימות כעת
                   </>
                 )}
               </button>
-            </form>
+            )}
+            
             <p className="settings-helper-desc">
-              * אירועים מהיומן החיצוני יתווספו אוטומטית כמתקיים לרשימת המשימות במערכת.
+              * המערכת תסרוק את האירועים העתידיים שלך ותשמור אותם תחת משימות ה-CRM.
             </p>
           </div>
         </div>
@@ -154,7 +206,7 @@ const Settings = () => {
           </h3>
           <div className="card-content">
             <p className="settings-desc">
-              התחל לעבוד עם נתונים אמיתיים! מחק את נתוני הדגמה המדומים שהוזנו במערכת לצורך המחשה:
+              מחק את כל נתוני המערכת לצמיתות כדי להתחיל לעבוד עם נתונים נקיים:
             </p>
             <button 
               className="btn btn-danger w-full" 
@@ -164,7 +216,7 @@ const Settings = () => {
               {clearing ? 'מנקה נתונים...' : (
                 <>
                   <Trash2 size={14} style={{ display: 'inline-flex', alignItems: 'center', marginInlineEnd: '6px', verticalAlign: 'middle' }} />
-                  מחק נתוני הדגמה
+                  מחק את כל הנתונים
                 </>
               )}
             </button>
@@ -211,15 +263,15 @@ const Settings = () => {
           <div className="card-content">
             <div className="info-row">
               <span className="info-lbl text-mono">SYSTEM_VERSION</span>
-              <span className="info-val text-mono"><bdi>1.1.0 (Real Data & iCal Sync)</bdi></span>
+              <span className="info-val text-mono"><bdi>1.2.0 (Cookie Auth & Google OAuth)</bdi></span>
             </div>
             <div className="info-row">
               <span className="info-lbl text-mono">DATABASE_ENGINE</span>
-              <span className="info-val text-mono">SQLite 3</span>
+              <span className="info-val text-mono">Cloudflare D1 (SQL)</span>
             </div>
             <div className="info-row">
               <span className="info-lbl text-mono">STACK_TECHNOLOGY</span>
-              <span className="info-val text-mono">React + Express + Node</span>
+              <span className="info-val text-mono">React + Hono + Workers</span>
             </div>
             <div className="info-row">
               <span className="info-lbl text-mono">SERVER_STATUS</span>
@@ -264,10 +316,40 @@ const Settings = () => {
           gap: 16px;
         }
 
-        .calendar-sync-form {
+        .google-sync-status {
           display: flex;
-          flex-direction: column;
-          gap: 12px;
+          align-items: center;
+          gap: 10px;
+          font-size: 13px;
+        }
+
+        .status-badge {
+          font-size: 11px;
+          padding: 3px 8px;
+          border-radius: 3px;
+          font-weight: 700;
+        }
+
+        .status-badge.connected {
+          background-color: rgba(16, 185, 129, 0.1);
+          color: var(--color-success);
+          border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        .status-badge.disconnected {
+          background-color: rgba(239, 68, 68, 0.1);
+          color: var(--color-danger);
+          border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .google-btn {
+          background-color: #4285f4;
+          border-color: #4285f4;
+        }
+
+        .google-btn:hover {
+          background-color: #357ae8;
+          border-color: #357ae8;
         }
 
         .settings-divider {

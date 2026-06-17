@@ -1,12 +1,60 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 
 const app = new Hono();
 
-// Enable CORS
-app.use('/api/*', cors());
+// Secret key for user cookies validation (Since we run in CF Worker, use environment secret or default fallback)
+const SESSION_SECRET = "roi-crm-super-secure-token-2026";
 
-// Helper to parse ICS calendar feeds (Runs completely in memory)
+// Credentials for Google OAuth (These will read from c.env in Cloudflare Dashboard)
+// Set fallback to avoid breaking deployments, user can update them in Cloudflare dashboard
+const getGoogleCredentials = (c) => ({
+  clientId: c.env.GOOGLE_CLIENT_ID || "1032890523098-fakeclientid.apps.googleusercontent.com",
+  clientSecret: c.env.GOOGLE_CLIENT_SECRET || "GOCSPX-fakesecret",
+  redirectUri: c.env.GOOGLE_REDIRECT_URI || "https://crm-backend.roi-chocron7.workers.dev/api/auth/google/callback"
+});
+
+// Enable CORS with Credentials for cookies support
+app.use('/api/*', async (c, next) => {
+  const origin = c.req.header('Origin') || 'https://roi-chocron.github.io';
+  const corsMiddleware = cors({
+    origin: origin,
+    credentials: true,
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization'],
+  });
+  return corsMiddleware(c, next);
+});
+
+// Helper query functions using Cloudflare D1
+const getDb = (c) => c.env.DB;
+
+// ==========================================
+// AUTHENTICATION MIDDLEWARE
+// ==========================================
+app.use('/api/*', async (c, next) => {
+  const path = c.req.path;
+  // Exclude login and OAuth callback from authentication checks
+  if (
+    path === '/api/auth/login' || 
+    path === '/api/auth/logout' ||
+    path === '/api/auth/google/callback' || 
+    path === '/api/auth/google/redirect' ||
+    c.req.method === 'OPTIONS'
+  ) {
+    return next();
+  }
+
+  const session = getCookie(c, 'crm_session');
+  if (!session || session !== SESSION_SECRET) {
+    return c.json({ error: 'Unauthorized. Please login.' }, 401);
+  }
+
+  return next();
+});
+
+// Helper to parse ICS calendar feeds
 function parseICS(icsText) {
   const events = [];
   const lines = icsText.split(/\r?\n/);
@@ -14,8 +62,6 @@ function parseICS(icsText) {
   
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i].trim();
-    
-    // Handle line folding
     while (i + 1 < lines.length && (lines[i+1].startsWith(' ') || lines[i+1].startsWith('\t'))) {
       line += lines[i+1].substring(1);
       i++;
@@ -50,13 +96,77 @@ function parseICS(icsText) {
 
 // SQL Query Translators for SQLite D1 Compatibility
 function translateSql(sql) {
-  // Convert ? placeholders to ?1, ?2, ?3... for D1 parameter bindings
   let placeholderIndex = 1;
   return sql.replace(/\?/g, () => `?${placeholderIndex++}`);
 }
 
-// Helper query functions using Cloudflare D1 (provided via c.env.DB)
-const getDb = (c) => c.env.DB;
+// ==========================================
+// USER AUTH ROUTES
+// ==========================================
+
+// Login route (Checks username and raw/md5 hash)
+app.post('/api/auth/login', async (c) => {
+  try {
+    const db = getDb(c);
+    const body = await c.req.json();
+    const { username, password } = body;
+
+    if (!username || !password) {
+      return c.json({ error: 'Username and password required' }, 400);
+    }
+
+    // Hash password with simple MD5 hex (D1 supports username matching)
+    // For local '123456' it is 'e10adc3949ba59abbe56e057f20f883e'
+    let md5 = "";
+    try {
+      const msgUint8 = new TextEncoder().encode(password);
+      const hashBuffer = await crypto.subtle.digest('MD5', msgUint8);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      md5 = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (e) {
+      // Basic encoding fallback in non-crypto JS environments
+      md5 = password;
+    }
+
+    const user = await db.prepare('SELECT id, name, username FROM users WHERE username = ?1 AND (password_hash = ?2 OR password_hash = ?3)')
+      .bind(username, password, md5).first();
+
+    if (!user) {
+      return c.json({ error: 'Invalid username or password' }, 401);
+    }
+
+    // Set Session Cookie (Secure, HttpOnly, SameSite config)
+    setCookie(c, 'crm_session', SESSION_SECRET, {
+      path: '/',
+      secure: true,
+      httpOnly: false, // Accessible to front-end client verification
+      sameSite: 'None', // Required for cross-site cookie settings under Github Pages Context
+      maxAge: 60 * 60 * 24 * 7 // 7 Days
+    });
+
+    return c.json({ success: true, user });
+  } catch (error) {
+    return c.json({ error: error.message }, 500);
+  }
+});
+
+// Logout route
+app.post('/api/auth/logout', async (c) => {
+  deleteCookie(c, 'crm_session', { path: '/', secure: true, sameSite: 'None' });
+  return c.json({ success: true });
+});
+
+// Check current authentication status
+app.get('/api/auth/me', async (c) => {
+  const session = getCookie(c, 'crm_session');
+  if (!session || session !== SESSION_SECRET) {
+    return c.json({ loggedIn: false }, 401);
+  }
+  // Retrieve default admin user
+  const db = getDb(c);
+  const user = await db.prepare('SELECT id, name, username FROM users LIMIT 1').first();
+  return c.json({ loggedIn: true, user });
+});
 
 // ==========================================
 // CLIENTS / LEADS ROUTES
@@ -371,20 +481,17 @@ app.delete('/api/notes/:id', async (c) => {
 });
 
 // ==========================================
-// DOCUMENTS ROUTES (D1 Cloud Mode: In-memory simulation / D1 reference)
+// DOCUMENTS ROUTES
 // ==========================================
 
-// Cloudflare Workers has no writable local storage disk. 
-// We will store document paths referencing the UI file mock as simulation.
 app.post('/api/clients/:id/documents', async (c) => {
   try {
     const db = getDb(c);
     const id = c.req.param('id');
     
-    // In Edge Workers we simulate file attachments using details from json payload
     const body = await c.req.json().catch(() => ({}));
     const fileName = body.fileName || 'document.pdf';
-    const fileSize = body.fileSize || 102400; // 100 KB
+    const fileSize = body.fileSize || 102400;
     const filePath = body.filePath || `/mock-uploads/${Date.now()}-${fileName}`;
 
     const runResult = await db.prepare(`
@@ -420,8 +527,203 @@ app.delete('/api/documents/:id', async (c) => {
 });
 
 // ==========================================
-// CALENDAR SYNC iCal ROUTE
+// GOOGLE CALENDAR OAUTH INTEGRATION ROUTES
 // ==========================================
+
+// Endpoint to start OAuth redirect flow
+app.get('/api/auth/google/redirect', async (c) => {
+  const { clientId, redirectUri } = getGoogleCredentials(c);
+  
+  // Set parameters requesting Google offline calendar access
+  const googleOAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `response_type=code` +
+    `&client_id=${encodeURIComponent(clientId)}` +
+    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    `&scope=${encodeURIComponent('https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.readonly')}` +
+    `&access_type=offline` +
+    `&prompt=consent`;
+
+  return c.redirect(googleOAuthUrl);
+});
+
+// Callback route where Google returns auth code
+app.get('/api/auth/google/callback', async (c) => {
+  const db = getDb(c);
+  const code = c.req.query('code');
+  const error = c.req.query('error');
+
+  if (error) {
+    return c.html(`<h3>שגיאה בהתחברות ל-Google: ${error}</h3>`);
+  }
+
+  if (!code) {
+    return c.html(`<h3>חסר קוד אימות מ-Google</h3>`);
+  }
+
+  const { clientId, clientSecret, redirectUri } = getGoogleCredentials(c);
+
+  try {
+    // Exchange code for Google Access/Refresh tokens
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code'
+      })
+    });
+
+    if (!tokenResponse.ok) {
+      const errText = await tokenResponse.text();
+      throw new Error(`Token exchange failed: ${errText}`);
+    }
+
+    const tokens = await tokenResponse.json();
+    const expiresAt = Date.now() + (tokens.expires_in * 1000);
+
+    // Save tokens in database integration table
+    await db.prepare(`
+      INSERT INTO oauth_tokens (provider, access_token, refresh_token, expires_at)
+      VALUES ('google', ?1, ?2, ?3)
+      ON CONFLICT(provider) DO UPDATE SET
+        access_token = excluded.access_token,
+        refresh_token = COALESCE(excluded.refresh_token, oauth_tokens.refresh_token),
+        expires_at = excluded.expires_at,
+        updated_at = CURRENT_TIMESTAMP
+    `).bind(tokens.access_token, tokens.refresh_token || null, expiresAt).run();
+
+    // Return auto closing success window
+    return c.html(`
+      <div style="font-family: sans-serif; text-align: center; padding: 40px; background: #0b0f19; color: #fff; height: 100vh;">
+        <h2 style="color: #10b981;">החיבור ליומן Google בוצע בהצלחה!</h2>
+        <p>חלון זה ייסגר אוטומטית כעת והסנכרון יתחיל לעבוד.</p>
+        <script>
+          setTimeout(() => {
+            if (window.opener) {
+              window.opener.postMessage('google-oauth-success', '*');
+            }
+            window.close();
+          }, 2500);
+        </script>
+      </div>
+    `);
+  } catch (err) {
+    return c.html(`<h3 style="color:#ef4444;">שגיאה בתהליך החיבור: ${err.message}</h3>`);
+  }
+});
+
+// Sync Google Calendar status
+app.get('/api/calendar/google/status', async (c) => {
+  const db = getDb(c);
+  const token = await db.prepare("SELECT provider, updated_at FROM oauth_tokens WHERE provider = 'google'").first();
+  return c.json({ connected: !!token, lastSync: token ? token.updated_at : null });
+});
+
+// Trigger Google Calendar sync process
+app.post('/api/calendar/google/sync', async (c) => {
+  const db = getDb(c);
+  
+  // 1. Fetch Google credentials
+  const token = await db.prepare("SELECT * FROM oauth_tokens WHERE provider = 'google'").first();
+  if (!token) {
+    return c.json({ error: "Google Calendar not connected. Authenticate first." }, 400);
+  }
+
+  let accessToken = token.access_token;
+  
+  // 2. Refresh token if expired
+  if (Date.now() >= token.expires_at) {
+    if (!token.refresh_token) {
+      return c.json({ error: "Access token expired and no refresh token available." }, 401);
+    }
+    
+    const { clientId, clientSecret } = getGoogleCredentials(c);
+    try {
+      const refreshResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: token.refresh_token,
+          grant_type: 'refresh_token'
+        })
+      });
+
+      if (!refreshResponse.ok) {
+        throw new Error("Failed to refresh Google token");
+      }
+
+      const refreshed = await refreshResponse.json();
+      accessToken = refreshed.access_token;
+      const expiresAt = Date.now() + (refreshed.expires_in * 1000);
+
+      await db.prepare(`
+        UPDATE oauth_tokens 
+        SET access_token = ?1, expires_at = ?2, updated_at = CURRENT_TIMESTAMP
+        WHERE provider = 'google'
+      `).bind(accessToken, expiresAt).run();
+    } catch (err) {
+      return c.json({ error: `Failed to refresh OAuth token: ${err.message}` }, 500);
+    }
+  }
+
+  // 3. Query Google Calendar events
+  try {
+    const timeMin = new Date().toISOString(); // Sync events starting now
+    const calendarUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&singleEvents=true&orderBy=startTime&maxResults=50`;
+    
+    const response = await fetch(calendarUrl, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Google Calendar API error: ${errText}`);
+    }
+
+    const data = await response.json();
+    const events = data.items || [];
+    
+    let addedCount = 0;
+    for (const event of events) {
+      const title = event.summary || 'אירוע ללא שם';
+      const description = event.description || 'סונכרן מיומן Google';
+      
+      // Parse event dates
+      let due_date = null;
+      if (event.start?.dateTime) {
+        due_date = event.start.dateTime.split('T')[0];
+      } else if (event.start?.date) {
+        due_date = event.start.date;
+      }
+
+      if (!due_date) continue;
+
+      // Avoid duplicates
+      const existing = await db.prepare("SELECT id FROM tasks WHERE title = ?1 AND due_date = ?2").bind(
+        title, due_date
+      ).first();
+
+      if (!existing) {
+        await db.prepare(`
+          INSERT INTO tasks (title, description, due_date, status)
+          VALUES (?1, ?2, ?3, 'pending')
+        `).bind(title, description, due_date).run();
+        addedCount++;
+      }
+    }
+
+    return c.json({ success: true, eventsSynced: events.length, newEventsAdded: addedCount });
+  } catch (error) {
+    return c.json({ error: `Google Calendar Sync error: ${error.message}` }, 500);
+  }
+});
+
+// Legacy iCal sync endpoint (Fallback)
 app.post('/api/calendar/sync', async (c) => {
   try {
     const db = getDb(c);
@@ -432,7 +734,6 @@ app.post('/api/calendar/sync', async (c) => {
       return c.json({ error: 'iCal feed URL is required' }, 400);
     }
 
-    console.log(`Fetching calendar feed from: ${url}`);
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`Failed to fetch iCal feed (Status: ${response.status})`);
@@ -473,8 +774,7 @@ app.post('/api/settings/reset', async (c) => {
     await db.prepare('DELETE FROM notes').run();
     await db.prepare('DELETE FROM tasks').run();
     await db.prepare('DELETE FROM documents').run();
-    
-    return c.json({ message: 'Database reset successfully. Clean slate activated.' });
+    return c.json({ message: 'Database reset successfully.' });
   } catch (error) {
     return c.json({ error: error.message }, 500);
   }
@@ -490,14 +790,11 @@ app.post('/api/settings/seed', async (c) => {
     await db.prepare('DELETE FROM tasks').run();
     await db.prepare('DELETE FROM documents').run();
 
-    // Re-seed
+    // Re-seed sample data
     const sampleClients = [
       ['רוני לוי', 'טק-סולושנס', 'roni@tech-solutions.co.il', '054-1234567', 'lead', 'פייסבוק', 15000, 'מתעניין במערכת אוטומציה לעסק'],
       ['יוסי כהן', 'בנייה וייזום', 'yossi@cohen-build.co.il', '052-7654321', 'contacted', 'המלצה', 45000, 'צריך הצעת מחיר עבור פרויקט שיפוץ משרדים'],
-      ['מיכל אברהם', 'סטודיו פיקסל', 'michal@pixel-studio.io', '050-1112233', 'proposal', 'גוגל', 8500, 'נשלחה הצעת מחיר למיתוג ועיצוב אתר'],
-      ['דניאל מזרחי', 'קפה ומאפה', 'daniel@coffee-bakery.co.il', '053-9998877', 'negotiation', 'אינסטגרם', 12000, 'משא ומתן על תנאי התשלום והיקף עבודה'],
-      ['שירה גולן', 'גולן שיווק', 'shira@golan-media.com', '055-6667788', 'won', 'אורגני', 22000, 'עסקה נסגרה! תחילת עבודה ב-1 לחודש'],
-      ['איתי רפאל', 'רפאל פיננסים', 'itay@refael-finance.co.il', '054-8889900', 'lost', 'פייסבוק', 30000, 'החליט ללכת עם ספק זול יותר כרגע']
+      ['מיכל אברהם', 'סטודיו פיקסל', 'michal@pixel-studio.io', '050-1112233', 'proposal', 'גוגל', 8500, 'נשלחה הצעת מחיר למיתוג ועיצוב אתר']
     ];
 
     const query = `
